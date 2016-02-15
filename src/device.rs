@@ -2,7 +2,7 @@
 // Copyright (C) 2015-2016  Dennis Schwerdel
 // This software is licensed under GPL-3 or newer (see LICENSE.md)
 
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, RawFd, FromRawFd};
 use std::io::{Result as IoResult, Error as IoError, Read, Write};
 use std::fs;
 
@@ -70,5 +70,11 @@ impl AsRawFd for Device {
     #[inline(always)]
     fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
+    }
+}
+
+impl Clone for Device {
+    fn clone(&self) -> Self {
+        Device{fd: unsafe { fs::File::from_raw_fd(self.fd.as_raw_fd()) }, ifname: self.ifname.clone()}
     }
 }

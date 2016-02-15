@@ -85,7 +85,7 @@ impl Table for SwitchTable {
     }
 
     #[inline]
-    fn lookup(&mut self, key: &Address) -> Option<SocketAddr> {
+    fn lookup(&self, key: &Address) -> Option<SocketAddr> {
         match self.table.get(key) {
             Some(value) => Some(value.address),
             None => None

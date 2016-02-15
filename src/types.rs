@@ -215,14 +215,14 @@ impl fmt::Display for Mode {
     }
 }
 
-pub trait Table {
+pub trait Table: Send + Sync {
     fn learn(&mut self, Address, Option<u8>, SocketAddr);
-    fn lookup(&mut self, &Address) -> Option<SocketAddr>;
+    fn lookup(&self, &Address) -> Option<SocketAddr>;
     fn housekeep(&mut self);
     fn remove_all(&mut self, SocketAddr);
 }
 
-pub trait Protocol: Sized {
+pub trait Protocol: Sized + Send {
     fn parse(&[u8]) -> Result<(Address, Address), Error>;
 }
 

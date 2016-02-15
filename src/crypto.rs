@@ -9,7 +9,7 @@ use std::sync::{Once, ONCE_INIT};
 static CRYPTO_INIT: Once = ONCE_INIT;
 
 use libc::{size_t, c_char, c_ulonglong, c_int};
-use aligned_alloc::{aligned_alloc, aligned_free};
+use aligned_alloc::{aligned_alloc};
 
 use super::types::Error;
 
@@ -42,19 +42,25 @@ const crypto_pwhash_scryptsalsa208sha256_OPSLIMIT_INTERACTIVE: usize = 524288;
 #[allow(non_upper_case_globals)]
 const crypto_pwhash_scryptsalsa208sha256_MEMLIMIT_INTERACTIVE: usize = 16777216;
 
-pub struct Aes256State(*mut [u8; crypto_aead_aes256gcm_STATEBYTES]);
+pub struct Aes256State(Vec<u8>);
 
 impl Aes256State {
     fn new() -> Aes256State {
         let ptr = aligned_alloc(crypto_aead_aes256gcm_STATEBYTES, 16)
             as *mut [u8; crypto_aead_aes256gcm_STATEBYTES];
-        Aes256State(ptr)
+        Aes256State(unsafe {
+            Vec::from_raw_parts(ptr as *mut u8, crypto_aead_aes256gcm_STATEBYTES, crypto_aead_aes256gcm_STATEBYTES)
+        })
     }
 }
 
-impl Drop for Aes256State {
-    fn drop(&mut self) {
-        unsafe { aligned_free(self.0 as *mut ()) }
+impl Clone for Aes256State {
+    fn clone(&self) -> Self {
+        let mut cloned = Aes256State::new();
+        unsafe {
+            ptr::copy_nonoverlapping(self.0.as_ptr(), cloned.0.as_mut_ptr(), crypto_aead_aes256gcm_STATEBYTES);
+        }
+        cloned
     }
 }
 
@@ -124,6 +130,7 @@ pub enum CryptoMethod {
     ChaCha20, AES256
 }
 
+#[derive(Clone)]
 pub enum Crypto {
     None,
     ChaCha20Poly1305{
@@ -227,7 +234,7 @@ impl Crypto {
                 unsafe { randombytes_buf(nonce.as_mut_ptr(), nonce.len()) };
                 let state = Aes256State::new();
                 let res = unsafe { crypto_aead_aes256gcm_beforenm(
-                    state.0,
+                    state.0.as_ptr() as *mut [u8; crypto_aead_aes256gcm_STATEBYTES],
                     key[..crypto_aead_aes256gcm_KEYBYTES].as_ptr() as *const [u8; crypto_aead_aes256gcm_KEYBYTES]
                 ) };
                 assert_eq!(res, 0);
@@ -268,7 +275,7 @@ impl Crypto {
                     header.as_ptr(), // Base pointer to additional data
                     header.len() as u64, // Size of additional data
                     nonce.as_ptr() as *const [u8; crypto_aead_aes256gcm_NPUBBYTES], // Base pointer to public nonce
-                    state.0 // Base pointer to state
+                    state.0.as_ptr() as *mut [u8; crypto_aead_aes256gcm_STATEBYTES] // Base pointer to state
                 ) };
                 match res {
                     0 => Ok(mlen as usize),
@@ -317,7 +324,7 @@ impl Crypto {
                     header.len() as u64, // Size of additional data
                     ptr::null::<[u8; 0]>(), // Base pointer to secret nonce (always NULL)
                     nonce.as_ptr() as *const [u8; crypto_aead_aes256gcm_NPUBBYTES], // Base pointer to public nonce
-                    state.0 // Base pointer to state
+                    state.0.as_ptr() as *mut [u8; crypto_aead_aes256gcm_STATEBYTES] // Base pointer to state
                 ) };
                 assert_eq!(res, 0);
                 unsafe {

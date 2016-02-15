@@ -75,7 +75,7 @@ impl Table for RoutingTable {
         }
     }
 
-    fn lookup(&mut self, addr: &Address) -> Option<SocketAddr> {
+    fn lookup(&self, addr: &Address) -> Option<SocketAddr> {
         let len = addr.len as usize;
         let mut found = None;
         let mut found_len: isize = -1;

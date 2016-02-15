@@ -93,7 +93,7 @@ fn run_script(script: String, ifname: &str) {
     }
 }
 
-fn run<T: Protocol> (args: Args) {
+fn run<T: Protocol + 'static> (args: Args) {
     let device = try_fail!(Device::new(&args.flag_device, args.flag_type),
         "Failed to open virtual {} interface {}: {}", args.flag_type, &args.flag_device);
     info!("Opened device {}", device.ifname());
@@ -129,9 +129,10 @@ fn run<T: Protocol> (args: Args) {
     for addr in &args.flag_connect {
         try_fail!(cloud.connect(&addr as &str, true), "Failed to send message to {}: {}", &addr);
     }
+    let ifname = cloud.ifname().to_owned();
     cloud.run();
     if let Some(script) = args.flag_ifdown {
-        run_script(script, cloud.ifname());
+        run_script(script, &ifname);
     }
 }
 

@@ -64,7 +64,7 @@ impl Default for TopHeader {
     }
 }
 
-#[derive(Default, Debug, PartialEq, Eq)]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 pub struct Options {
     pub network_id: Option<NetworkId>,
 }
