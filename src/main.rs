@@ -5,20 +5,22 @@
 #![cfg_attr(feature = "bench", feature(test))]
 
 #[macro_use] extern crate log;
-#[macro_use] extern crate bitflags;
+#[macro_use] extern crate serde_derive;
+extern crate serde;
+extern crate serde_yaml;
+extern crate bitflags;
 extern crate time;
 extern crate docopt;
-extern crate rustc_serialize;
-extern crate signal;
 extern crate libc;
 extern crate aligned_alloc;
 extern crate rand;
 extern crate fnv;
 extern crate net2;
-extern crate yaml_rust;
 extern crate igd;
 extern crate siphasher;
 extern crate daemonize;
+extern crate mio;
+extern crate nix;
 #[cfg(feature = "bench")] extern crate test;
 
 #[macro_use] pub mod util;
@@ -29,9 +31,7 @@ pub mod ethernet;
 pub mod ip;
 pub mod cloud;
 pub mod device;
-pub mod poll;
 pub mod config;
-pub mod configfile;
 pub mod port_forwarding;
 #[cfg(test)] mod tests;
 #[cfg(feature = "bench")] mod benches;
@@ -61,7 +61,7 @@ const MAGIC: HeaderMagic = *b"vpn\x01";
 
 static USAGE: &'static str = include_str!("usage.txt");
 
-#[derive(RustcDecodable, Debug, Default)]
+#[derive(Deserialize, Debug, Default)]
 pub struct Args {
     flag_config: Option<String>,
     flag_type: Option<Type>,
@@ -195,7 +195,7 @@ impl<P: Protocol> AnyCloud<P> {
 
 fn run<P: Protocol> (config: Config) {
     let device = try_fail!(Device::new(&config.device_name, config.device_type),
-        "Failed to open virtual {} interface {}: {}", config.device_type, config.device_name);
+        "Failed to open virtual {} interface: {}", config.device_type);
     info!("Opened device {}", device.ifname());
     let mut ranges = Vec::with_capacity(config.subnets.len());
     for s in &config.subnets {
@@ -252,7 +252,7 @@ fn run<P: Protocol> (config: Config) {
 }
 
 fn main() {
-    let args: Args = Docopt::new(USAGE).and_then(|d| d.decode()).unwrap_or_else(|e| e.exit());
+    let args: Args = Docopt::new(USAGE).and_then(|d| d.deserialize()).unwrap_or_else(|e| e.exit());
     if args.flag_version {
         Crypto::init();
         println!("VpnCloud v{}, protocol version {}, libsodium {} (AES256: {})",
@@ -277,7 +277,9 @@ fn main() {
     let mut config = Config::default();
     if let Some(ref file) = args.flag_config {
         info!("Reading config file '{}'", file);
-        let config_file = try_fail!(configfile::parse(file), "Failed to load config file: {:?}");
+
+        let file_reader = File::open(file).expect("Failed to open config file: {}");
+        let config_file = try_fail!(serde_yaml::from_reader(file_reader), "Failed to parse config file: {:?}");
         config.merge_file(config_file)
     }
     config.merge_args(args);

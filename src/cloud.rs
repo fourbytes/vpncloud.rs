@@ -4,20 +4,19 @@
 
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::collections::{HashMap, HashSet};
-use std::net::UdpSocket;
 use std::io;
 use std::fmt;
-use std::os::unix::io::AsRawFd;
 use std::marker::PhantomData;
 use std::hash::BuildHasherDefault;
-use std::time::Instant;
 use std::cmp::min;
+use std::sync::atomic::{AtomicBool, Ordering, ATOMIC_BOOL_INIT};
 
 use fnv::FnvHasher;
-use libc::{SIGTERM, SIGQUIT, SIGINT};
-use signal::trap::Trap;
+use nix::sys::signal;
 use rand::{random, sample, thread_rng};
 use net2::UdpBuilder;
+use mio::{Poll, Ready, PollOpt, Events, Token};
+use mio::net::UdpSocket;
 
 use super::types::{Table, Protocol, Range, Error, HeaderMagic, NodeId};
 use super::device::Device;
@@ -25,13 +24,23 @@ use super::udpmessage::{encode, decode, Message};
 use super::crypto::Crypto;
 use super::port_forwarding::PortForwarding;
 use super::util::{now, Time, Duration, resolve};
-use super::poll::{self, Poll};
+
 
 type Hash = BuildHasherDefault<FnvHasher>;
 
+static EXIT_NOW: AtomicBool = ATOMIC_BOOL_INIT;
+
 const MAX_RECONNECT_INTERVAL: u16 = 3600;
 const RESOLVE_INTERVAL: Time = 300;
+const SOCKET4_TOKEN: Token = Token(0);
+const SOCKET6_TOKEN: Token = Token(1);
+const DEVICE_TOKEN: Token = Token(2);
 
+
+extern fn handle_exit(_: i32) {
+    info!("Caught exit signal, exiting gracefully...");
+    EXIT_NOW.store(true, Ordering::Relaxed);
+}
 
 struct PeerList {
     timeout: Duration,
@@ -193,20 +202,18 @@ impl<P: Protocol, T: Table> GenericCloud<P, T> {
     #[allow(unknown_lints)]
     #[allow(too_many_arguments)]
     pub fn new(magic: HeaderMagic, device: Device, listen: u16, table: T,
-        peer_timeout: Duration, learning: bool, broadcast: bool, addresses: Vec<Range>,
-        crypto: Crypto, port_forwarding: Option<PortForwarding>) -> Self {
-        let socket4 = match UdpBuilder::new_v4().expect("Failed to obtain ipv4 socket builder")
-            .reuse_address(true).expect("Failed to set so_reuseaddr").bind(("0.0.0.0", listen)) {
-            Ok(socket) => socket,
-            Err(err) => fail!("Failed to open ipv4 address 0.0.0.0:{}: {}", listen, err)
-        };
-        let socket6 = match UdpBuilder::new_v6().expect("Failed to obtain ipv6 socket builder")
+               peer_timeout: Duration, learning: bool, broadcast: bool, addresses: Vec<Range>,
+               crypto: Crypto, port_forwarding: Option<PortForwarding>) -> Self {
+        let socket4 = UdpSocket::from_socket(UdpBuilder::new_v4().expect("Failed to obtain ipv4 socket builder")
+            .reuse_address(true).expect("Failed to set so_reuseaddr")
+            .bind(("0.0.0.0", listen)).expect("Failed to open ipv4 address 0.0.0.0:{}: {}")).expect("Failed to wrap ipv4 socket.");
+
+        let socket6 = UdpSocket::from_socket(UdpBuilder::new_v6().expect("Failed to obtain ipv6 socket builder")
             .only_v6(true).expect("Failed to set only_v6")
-            .reuse_address(true).expect("Failed to set so_reuseaddr").bind(("::", listen)) {
-            Ok(socket) => socket,
-            Err(err) => fail!("Failed to open ipv6 address ::{}: {}", listen, err)
-        };
-        GenericCloud{
+            .reuse_address(true).expect("Failed to set so_reuseaddr")
+            .bind(("::", listen)).expect("Failed to open ipv6 address ::{}: {}")).expect("Failed to wrap ipv6 socket.");
+
+        GenericCloud {
             magic: magic,
             node_id: random(),
             peers: PeerList::new(peer_timeout),
@@ -273,7 +280,7 @@ impl<P: Protocol, T: Table> GenericCloud<P, T> {
             SocketAddr::V4(_) => &self.socket4,
             SocketAddr::V6(_) => &self.socket6
         };
-        match socket.send_to(msg_data, addr) {
+        match socket.send_to(msg_data, &addr) {
             Ok(written) if written == msg_data.len() => Ok(()),
             Ok(_) => Err(Error::Socket("Sent out truncated packet", io::Error::new(io::ErrorKind::Other, "truncated"))),
             Err(e) => Err(Error::Socket("IOError when sending", e))
@@ -577,42 +584,37 @@ impl<P: Protocol, T: Table> GenericCloud<P, T> {
     #[allow(unknown_lints)]
     #[allow(cyclomatic_complexity)]
     pub fn run(&mut self) {
-        let dummy_time = Instant::now();
-        let trap = Trap::trap(&[SIGINT, SIGTERM, SIGQUIT]);
-        let mut poll_handle = try_fail!(Poll::new(3), "Failed to create poll handle: {}");
-        let socket4_fd = self.socket4.as_raw_fd();
-        let socket6_fd = self.socket6.as_raw_fd();
-        let device_fd = self.device.as_raw_fd();
-        try_fail!(poll_handle.register(socket4_fd, poll::READ), "Failed to add ipv4 socket to poll handle: {}");
-        try_fail!(poll_handle.register(socket6_fd, poll::READ), "Failed to add ipv6 socket to poll handle: {}");
-        try_fail!(poll_handle.register(device_fd, poll::READ), "Failed to add device to poll handle: {}");
+        let poll = try_fail!(Poll::new(), "Failed to create poll handle: {}");
+        try_fail!(poll.register(&self.socket4, SOCKET4_TOKEN, Ready::readable(), PollOpt::edge()), "Failed to add ipv4 socket to poll handle: {}");
+        try_fail!(poll.register(&self.socket6, SOCKET6_TOKEN, Ready::readable(), PollOpt::edge()), "Failed to add ipv6 socket to poll handle: {}");
+        try_fail!(poll.register(&self.device, DEVICE_TOKEN, Ready::readable(), PollOpt::edge()), "Failed to add device to poll handle: {}");
         let mut buffer = [0; 64*1024];
-        let mut poll_error = false;
+
+        let sig_action = signal::SigAction::new(signal::SigHandler::Handler(handle_exit),
+                                            signal::SaFlags::empty(),
+                                            signal::SigSet::empty());
+        for sig in &[signal::SIGINT, signal::SIGTERM, signal::SIGQUIT] {
+            unsafe { signal::sigaction(*sig, &sig_action).expect("Failed to register signal handler: {}"); }
+        }
+
+
+        let mut events = Events::with_capacity(1024);
         loop {
-            let evts = match poll_handle.wait(1000) {
-                Ok(evts) => evts,
-                Err(err) => {
-                    if poll_error {
-                        fail!("Poll wait failed again: {}", err);
-                    }
-                    error!("Poll wait failed: {}, retrying...", err);
-                    poll_error = true;
-                    continue
-                }
-            };
-            for evt in evts {
-                match evt.fd() {
-                    fd if (fd == socket4_fd || fd == socket6_fd) => {
-                        let (size, src) = match evt.fd() {
-                            fd if fd == socket4_fd => try_fail!(self.socket4.recv_from(&mut buffer), "Failed to read from ipv4 network socket: {}"),
-                            fd if fd == socket6_fd => try_fail!(self.socket6.recv_from(&mut buffer), "Failed to read from ipv6 network socket: {}"),
+            try_fail!(poll.poll(&mut events, None), "Poll wait failed: {}, retrying...");
+
+            for evt in events.iter() {
+                match evt.token() {
+                    SOCKET4_TOKEN | SOCKET6_TOKEN => {
+                        let (size, src) = match evt.token() {
+                            SOCKET4_TOKEN => try_fail!(self.socket4.recv_from(&mut buffer), "Failed to read from ipv4 network socket: {}"),
+                            SOCKET6_TOKEN => try_fail!(self.socket6.recv_from(&mut buffer), "Failed to read from ipv6 network socket: {}"),
                             _ => unreachable!()
                         };
                         if let Err(e) = decode(&mut buffer[..size], self.magic, &mut self.crypto).and_then(|msg| self.handle_net_message(src, msg)) {
                             error!("Error: {}, from: {}", e, src);
                         }
-                    },
-                    fd if (fd == device_fd) => {
+                    }
+                    DEVICE_TOKEN => {
                         let mut start = 64;
                         let (offset, size) = try_fail!(self.device.read(&mut buffer[start..]), "Failed to read from tap device: {}");
                         start += offset;
@@ -623,10 +625,10 @@ impl<P: Protocol, T: Table> GenericCloud<P, T> {
                     _ => unreachable!()
                 }
             }
+
             if self.next_housekeep < now() {
-                poll_error = false;
                 // Check for signals
-                if trap.wait(dummy_time).is_some() {
+                if EXIT_NOW.load(Ordering::Relaxed) {
                     break;
                 }
                 // Do the housekeeping

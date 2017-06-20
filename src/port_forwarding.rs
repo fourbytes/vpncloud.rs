@@ -1,6 +1,7 @@
-use std::net::{SocketAddrV4, UdpSocket, SocketAddr};
+use std::net::{SocketAddrV4, SocketAddr, ToSocketAddrs};
 use std::io;
 
+use mio::net::UdpSocket;
 use igd::*;
 
 use super::util::{Time, now};
@@ -35,8 +36,9 @@ impl PortForwarding {
         info!("Port-forwarding: found router at {}", gateway.addr);
         // Get the internal address (this trick gets the address by opening a UDP connection which
         // does not really open anything but returns the correct address)
-        let dummy_sock = UdpSocket::bind("0.0.0.0:0").expect("Failed to bind");
-        dummy_sock.connect(gateway.addr).expect("Failed to connect");
+        let addr = gateway.addr.to_socket_addrs().unwrap().nth(0).unwrap();
+        let dummy_sock = UdpSocket::bind(&"0.0.0.0:0".parse().unwrap()).expect("Failed to bind");
+        dummy_sock.connect(addr).expect("Failed to connect");
         let internal_addr;
         if let SocketAddr::V4(addr) = dummy_sock.local_addr().expect("Failed to get local address") {
             internal_addr = SocketAddrV4::new(*addr.ip(), port);

@@ -1,0 +1,14 @@
+device_type: tun
+device_name: utun2
+ifup: "/sbin/ifconfig $IFNAME 10.42.1.28/16 10.42.1.28 mtu 1500 up -arp"
+crypto: aes256
+shared_key: "-isa7dt86gqb6v7dwa6s87d8a7ido87"
+port: 3210
+peers:
+ - home.fourbytes.me:3210
+ - central.fourbytes.me:3210
+ - la1.fourbytes.me:3210
+peer_timeout: 1800
+mode: normal
+subnets:
+ - 10.42.1.28/32

@@ -2,25 +2,32 @@
 // Copyright (C) 2015-2016  Dennis Schwerdel
 // This software is licensed under GPL-3 or newer (see LICENSE.md)
 
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, RawFd, FromRawFd};
 use std::io::{self, Error as IoError, Read, Write};
 use std::fs;
 use std::fmt;
+use std::ffi::CString;
+
+use mio::{Poll, Token, Ready, PollOpt};
+use mio::event::Evented;
+use mio::unix::EventedFd;
 
 use super::types::Error;
 
 extern {
-    fn setup_tap_device(fd: i32, ifname: *mut u8) -> i32;
-    fn setup_tun_device(fd: i32, ifname: *mut u8) -> i32;
+    fn setup_tap_device(fd: i32, ifname: *mut i8) -> i32;
+    fn setup_tun_device(fd: i32, ifname: *mut i8) -> i32;
 }
 
 
 /// The type of a tun/tap device
-#[derive(RustcDecodable, Debug, Clone, Copy, PartialEq)]
+#[derive(Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum Type {
     /// Tun interface: This interface transports IP packets.
+    #[serde(rename = "tun")]
     Tun,
     /// Tap interface: This insterface transports Ethernet frames.
+    #[serde(rename = "tap")]
     Tap
 }
 
@@ -61,25 +68,46 @@ impl Device {
     ///
     /// # Panics
     /// This method panics if the interface name is longer than 31 bytes.
+    #[cfg(any(target_os = "bitrig", target_os = "dragonfly",
+        target_os = "freebsd", target_os = "ios", target_os = "macos",
+        target_os = "netbsd", target_os = "openbsd"))]
     pub fn new(ifname: &str, type_: Type) -> io::Result<Self> {
-        let fd = try!(fs::OpenOptions::new().read(true).write(true).open("/dev/net/tun"));
-        // Add trailing \0 to interface name
-        let mut ifname_string = String::with_capacity(32);
-        ifname_string.push_str(ifname);
-        ifname_string.push('\0');
-        assert!(ifname_string.len() <= 32);
-        let mut ifname_c = ifname_string.into_bytes();
+        let ifname_c = CString::new(ifname).unwrap();
+        assert!(ifname_c.to_bytes().len() <= 32);
+        let ifname_ptr = ifname_c.into_raw();
+
         let res = match type_ {
-            Type::Tun => unsafe { setup_tun_device(fd.as_raw_fd(), ifname_c.as_mut_ptr()) },
-            Type::Tap => unsafe { setup_tap_device(fd.as_raw_fd(), ifname_c.as_mut_ptr()) }
+            Type::Tun => unsafe { setup_tun_device(-1, ifname_ptr) },
+            Type::Tap => unsafe { setup_tap_device(-1, ifname_ptr) }
         };
         match res {
-            0 => {
-                // Remove trailing \0 from name
-                while ifname_c.last() == Some(&0) {
-                    ifname_c.pop();
-                }
-                Ok(Device{fd: fd, ifname: String::from_utf8(ifname_c).unwrap(), type_: type_})
+            res if res > 0 => {
+                let fd = unsafe { fs::File::from_raw_fd(res) };
+                let ifname_c = unsafe { CString::from_raw(ifname_ptr) };
+
+                Ok(Device{fd: fd, ifname: ifname_c.to_str().unwrap().to_string(), type_: type_})
+            },
+            _ => Err(IoError::last_os_error())
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    pub fn new(ifname: &str, type_: Type) -> io::Result<Self> {
+        let fd = try!(fs::OpenOptions::new().read(true).write(true).open("/dev/net/tun"));
+
+        let ifname_c = CString::new(ifname).unwrap();
+        assert!(ifname_c.to_bytes().len() <= 32);
+        let ifname_ptr = ifname_c.into_raw();
+        let res = match type_ {
+            Type::Tun => unsafe { setup_tun_device(fd.as_raw_fd(), ifname_ptr) },
+            Type::Tap => unsafe { setup_tap_device(fd.as_raw_fd(), ifname_ptr) }
+        };
+        match res {
+            res if res > 0 => {
+                let fd = unsafe { fs::File::from_raw_fd(res) };
+                let ifname_c = unsafe { CString::from_raw(ifname_ptr) };
+
+                Ok(Device{fd: fd, ifname: ifname_c.to_str().unwrap().to_string(), type_: type_})
             },
             _ => Err(IoError::last_os_error())
         }
@@ -139,6 +167,7 @@ impl Device {
     }
 
     #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[allow(unused_variables)]
     #[inline]
     fn correct_data_after_read(&mut self, _buffer: &mut [u8], start: usize, read: usize) -> (usize, usize) {
         (start, read)
@@ -147,6 +176,7 @@ impl Device {
     #[cfg(any(target_os = "bitrig", target_os = "dragonfly",
         target_os = "freebsd", target_os = "ios", target_os = "macos",
         target_os = "netbsd", target_os = "openbsd"))]
+    #[allow(unused_variables)]
     #[inline]
     fn correct_data_after_read(&mut self, buffer: &mut [u8], start: usize, read: usize) -> (usize, usize) {
         if self.type_ == Type::Tun {
@@ -206,5 +236,23 @@ impl AsRawFd for Device {
     #[inline]
     fn as_raw_fd(&self) -> RawFd {
         self.fd.as_raw_fd()
+    }
+}
+
+impl Evented for Device {
+    fn register(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt)
+        -> io::Result<()>
+    {
+        EventedFd(&self.as_raw_fd()).register(poll, token, interest, opts)
+    }
+
+    fn reregister(&self, poll: &Poll, token: Token, interest: Ready, opts: PollOpt)
+        -> io::Result<()>
+    {
+        EventedFd(&self.as_raw_fd()).reregister(poll, token, interest, opts)
+    }
+
+    fn deregister(&self, poll: &Poll) -> io::Result<()> {
+        EventedFd(&self.as_raw_fd()).deregister(poll)
     }
 }

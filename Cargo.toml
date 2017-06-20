@@ -12,23 +12,24 @@ readme = "README.md"
 
 [dependencies]
 time = "0.1"
-docopt = "0.7"
-rustc-serialize = "0.3"
+docopt = "0.8"
+serde = "1.0"
+serde_derive = "1.0"
+serde_yaml = "0.7"
 log = "0.3"
-signal = "0.3"
 libc = "0.2"
 aligned_alloc = "0.1"
 rand = "0.3"
 fnv = "1"
 net2 = "0.2"
 bitflags = "0.8"
-yaml-rust = "0.3"
 igd = "0.6"
 siphasher = "0.2"
 daemonize = "0.2"
+mio = "0.6"
+nix = "0.8"
 
 [build-dependencies]
-gcc = "0.3"
 pkg-config = "0.3"
 
 [features]

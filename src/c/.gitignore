@@ -1,0 +1,15 @@
+config.log
+config.status
+compile
+ar-lib
+aclocal.m4
+autom4te.cache
+depcomp
+install-sh
+Makefile.in
+Makefile
+missing
+tuntap.o
+.deps
+configure
+libtuntap.a

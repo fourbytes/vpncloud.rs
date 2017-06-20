@@ -5,8 +5,10 @@
 use test::Bencher;
 
 use std::str::FromStr;
-use std::net::{UdpSocket, ToSocketAddrs, Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::net::{ToSocketAddrs, Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::os::unix::io::AsRawFd;
+
+use mio::net::UdpSocket;
 
 use super::MAGIC;
 use super::cloud::GenericCloud;

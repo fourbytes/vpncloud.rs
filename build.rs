@@ -1,4 +1,3 @@
-extern crate gcc;
 extern crate pkg_config;
 
 use std::process::Command;
@@ -7,13 +6,21 @@ use std::env;
 use std::fs;
 
 fn main() {
-    gcc::Config::new().file("src/c/tuntap.c").include("src").compile("libtuntap.a");
+    let dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+
+    Command::new("make").args(&["clean"]).current_dir("src/c/").status().unwrap();
+    Command::new("autoreconf").args(&["-i"]).current_dir("src/c/").status().unwrap();
+    Command::new("./configure").current_dir("src/c/").status().unwrap();
+    Command::new("make").current_dir("src/c/").status().unwrap();
+
+    println!("cargo:rustc-link-search={}", dir.join("src/c/").to_str().unwrap());
+    println!("cargo:rustc-link-lib=static={}", "tuntap");
+
     if cfg!(feature = "system-libsodium") {
         pkg_config::Config::new().atleast_version("1.0.8").probe("libsodium").expect("Libsodium >= 1.0.8 missing");
         return
     } else {
         let target = env::var("TARGET").unwrap();
-        let dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
         let libsodium_dir = dir.join("libsodium");
         let libsodium_target_dir = dir.join("target/sodium-build").join(&target);
         let libsodium_target_file = libsodium_target_dir.join("libsodium.a");

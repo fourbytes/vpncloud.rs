@@ -119,9 +119,12 @@ extern {
 }
 
 
-#[derive(RustcDecodable, Debug, PartialEq)]
+#[derive(Deserialize, Debug, PartialEq)]
 pub enum CryptoMethod {
-    ChaCha20, AES256
+    #[serde(rename = "chacha20")]
+    ChaCha20,
+    #[serde(rename = "aes256")]
+    AES256
 }
 
 pub enum Crypto {
